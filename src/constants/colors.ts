@@ -1,0 +1,27 @@
+export const COLORS = {
+  bg: '#080A0F',
+  bg2: '#0E1118',
+  surface: '#13171F',
+  surface2: '#1A1F2B',
+  surface3: '#222838',
+  border: 'rgba(255,255,255,0.07)',
+  border2: 'rgba(255,255,255,0.12)',
+  lime: '#C8FF00',
+  limeDim: 'rgba(200,255,0,0.12)',
+  limeGlow: 'rgba(200,255,0,0.25)',
+  red: '#FF4757',
+  redDim: 'rgba(255,71,87,0.12)',
+  cyan: '#00D4FF',
+  cyanDim: 'rgba(0,212,255,0.1)',
+  orange: '#FF8C42',
+  orangeDim: 'rgba(255,140,66,0.1)',
+  purple: '#A78BFA',
+  purpleDim: 'rgba(167,139,250,0.1)',
+  text: '#F2F4F8',
+  text2: '#8B91A0',
+  text3: '#555D6E',
+  white: '#FFFFFF',
+  black: '#000000',
+} as const;
+
+export type ColorKey = keyof typeof COLORS;
