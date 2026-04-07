@@ -11,25 +11,44 @@ import type { OnboardingStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<OnboardingStackParamList, 'Setup'>;
 
-// DB stores metric internally — convert US input before saving
-function ftToCm(ft: string): number { return Math.round(parseFloat(ft) * 30.48); }
-function lbsToKg(lbs: string): number { return parseFloat((parseFloat(lbs) * 0.453592).toFixed(1)); }
+function lbsToKg(lbs: number): number { return parseFloat((lbs * 0.453592).toFixed(1)); }
+function ftInToCm(ft: number, inch: number): number { return Math.round((ft * 12 + inch) * 2.54); }
 
 const GENDERS = [
-  { label: 'Male',   icon: '♂' },
+  { label: 'Male', icon: '♂' },
   { label: 'Female', icon: '♀' },
-  { label: 'Other',  icon: '⚧' },
+  { label: 'Other', icon: '⚧' },
 ];
 
+function Stepper({
+  label, display, onInc, onDec,
+}: { label: string; display: string; onInc: () => void; onDec: () => void }) {
+  return (
+    <View style={stepperStyles.wrap}>
+      <Text style={stepperStyles.label}>{label}</Text>
+      <View style={stepperStyles.row}>
+        <TouchableOpacity style={stepperStyles.btn} onPress={onDec} activeOpacity={0.7}>
+          <Text style={stepperStyles.btnText}>−</Text>
+        </TouchableOpacity>
+        <Text style={stepperStyles.value}>{display}</Text>
+        <TouchableOpacity style={stepperStyles.btn} onPress={onInc} activeOpacity={0.7}>
+          <Text style={stepperStyles.btnText}>+</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 export default function SetupScreen({ navigation }: Props) {
-  const [age, setAge]       = useState('');
-  const [height, setHeight] = useState('');
-  const [weight, setWeight] = useState('');
-  const [goal, setGoal]     = useState(0);
-  const [env, setEnv]       = useState(0);
+  const [age, setAge] = useState('');
+  const [heightFt, setHeightFt] = useState(5);
+  const [heightIn, setHeightIn] = useState(9);
+  const [weightLbs, setWeightLbs] = useState(160);
+  const [goal, setGoal] = useState(0);
+  const [env, setEnv] = useState(0);
   const [gender, setGender] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState('');
+  const [error, setError] = useState('');
 
   const handleNext = async () => {
     setLoading(true);
@@ -43,9 +62,9 @@ export default function SetupScreen({ navigation }: Props) {
     }
 
     const { error: dbError } = await supabase.from('profiles').update({
-      age:       Number(age),
-      height_cm: ftToCm(height),
-      weight_kg: lbsToKg(weight),
+      age: Number(age) || 25,
+      height_cm: ftInToCm(heightFt, heightIn),
+      weight_kg: lbsToKg(weightLbs),
       goal,
       environment: env,
       gender,
@@ -56,8 +75,6 @@ export default function SetupScreen({ navigation }: Props) {
     navigation.navigate('Analyzing');
   };
 
-  const canProceed = age.trim() !== '' && height.trim() !== '' && weight.trim() !== '';
-
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -67,14 +84,39 @@ export default function SetupScreen({ navigation }: Props) {
 
         <Text style={styles.label}>STEP 2 OF 2</Text>
         <Text style={styles.heading}>Your{'\n'}Profile</Text>
-        <Text style={styles.subtitle}>
-          Tell us about yourself so our AI can build the perfect plan.
-        </Text>
+        <Text style={styles.subtitle}>Tell us about yourself so our AI can build the perfect plan.</Text>
 
+        {/* Age */}
         <View style={styles.inputs}>
           <Input icon="" placeholder="Age" value={age} onChangeText={setAge} keyboardType="numeric" />
-          <Input icon="" placeholder="Height (ft)  e.g. 5.9" value={height} onChangeText={setHeight} keyboardType="numeric" />
-          <Input icon="" placeholder="Weight (lbs)  e.g. 180" value={weight} onChangeText={setWeight} keyboardType="numeric" />
+        </View>
+
+        {/* Height */}
+        <Text style={styles.sectionLabel}>HEIGHT</Text>
+        <View style={styles.stepperRow}>
+          <Stepper
+            label="Feet"
+            display={`${heightFt} ft`}
+            onDec={() => setHeightFt(f => Math.max(4, f - 1))}
+            onInc={() => setHeightFt(f => Math.min(8, f + 1))}
+          />
+          <Stepper
+            label="Inches"
+            display={`${heightIn} in`}
+            onDec={() => setHeightIn(i => Math.max(0, i - 1))}
+            onInc={() => setHeightIn(i => Math.min(11, i + 1))}
+          />
+        </View>
+
+        {/* Weight */}
+        <Text style={styles.sectionLabel}>WEIGHT</Text>
+        <View style={styles.stepperRow}>
+          <Stepper
+            label="Pounds"
+            display={`${weightLbs} lbs`}
+            onDec={() => setWeightLbs(w => Math.max(80, w - 1))}
+            onInc={() => setWeightLbs(w => Math.min(400, w + 1))}
+          />
         </View>
 
         {/* Gender */}
@@ -128,7 +170,7 @@ export default function SetupScreen({ navigation }: Props) {
         <Button
           title={loading ? 'Saving...' : 'Build My Plan →'}
           onPress={handleNext}
-          disabled={!canProceed || loading}
+          disabled={loading}
           loading={loading}
           style={{ marginTop: 24 }}
         />
@@ -136,6 +178,22 @@ export default function SetupScreen({ navigation }: Props) {
     </SafeAreaView>
   );
 }
+
+const stepperStyles = StyleSheet.create({
+  wrap: { flex: 1 },
+  label: { fontSize: 10, fontWeight: '700', color: COLORS.text3, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 },
+  row: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: COLORS.surface2, borderRadius: 14,
+    borderWidth: 1.5, borderColor: COLORS.border, overflow: 'hidden',
+  },
+  btn: {
+    width: 48, height: 52, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: COLORS.surface3,
+  },
+  btnText: { fontSize: 22, fontWeight: '300', color: COLORS.text, lineHeight: 26 },
+  value: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '800', color: COLORS.text },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
@@ -147,6 +205,7 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 14, color: COLORS.text2, lineHeight: 22, marginBottom: 32 },
   inputs: { gap: 14, marginBottom: 24 },
   sectionLabel: { fontSize: 10, fontWeight: '700', color: COLORS.text3, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 12 },
+  stepperRow: { flexDirection: 'row', gap: 12, marginBottom: 24 },
   genderRow: { flexDirection: 'row', gap: 10, marginBottom: 24 },
   genderCard: { flex: 1, backgroundColor: COLORS.surface2, borderWidth: 2, borderColor: COLORS.border, borderRadius: 14, paddingVertical: 16, alignItems: 'center', gap: 6 },
   genderCardSelected: { backgroundColor: COLORS.limeDim, borderColor: COLORS.lime },

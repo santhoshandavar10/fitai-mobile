@@ -6,6 +6,7 @@ import { COLORS } from '../../constants/colors';
 import { supabase } from '../../lib/supabase';
 import Button from '../../components/Button';
 import Input from '../../components/Input';
+import SocialAuth from '../../components/SocialAuth';
 import type { OnboardingStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<OnboardingStackParamList, 'SignUp'>;
@@ -63,6 +64,8 @@ export default function SignUpScreen({ navigation }: Props) {
             disabled={loading}
             style={{ marginTop: 32 }}
           />
+
+          <SocialAuth mode="signup" />
 
           <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.toggle}>
             <Text style={styles.toggleText}>

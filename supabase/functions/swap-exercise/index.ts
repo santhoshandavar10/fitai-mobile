@@ -28,30 +28,26 @@ Deno.serve(async (req) => {
     const { data: { user }, error: authError } = await serviceClient.auth.getUser(token);
     if (authError || !user) return json({ error: 'Unauthorized' }, 401);
 
-    // frames: array of base64 jpeg strings (up to 5)
-    // exerciseName: the exercise we're trying to verify
-    const { frames, exerciseName } = await req.json();
-    if (!frames?.length || !exerciseName) return json({ error: 'frames and exerciseName required' }, 400);
+    const { exerciseName, muscle, environment } = await req.json();
+    if (!exerciseName || !muscle) return json({ error: 'exerciseName and muscle required' }, 400);
 
-    // Build content with up to 2 frames
-    const imageFrames = frames.slice(0, 2).map((f: string) => ({
-      type: 'image',
-      source: { type: 'base64', media_type: 'image/jpeg', data: f },
-    }));
+    const env = environment === 'Home' ? 'home (no gym machines, bodyweight or dumbbells only)' : 'gym';
 
-    const prompt = `You are a certified personal trainer. These are 2 frames from a workout video.
+    const prompt = `You are a personal trainer. The user cannot do "${exerciseName}" (targets: ${muscle}) because they don't have the required equipment. They are training at ${env}.
 
-The user claims they performed: "${exerciseName}"
-
-In ONE pass, answer:
-1. Is a person visible and moving (not just standing)?
-2. Does the body position match "${exerciseName}"?
-
-Be fair — partial reps or imperfect form still count as verified if the right muscle group is clearly being used.
-Mark not verified only if: person is just standing still, video is unrecognisable, or completely wrong exercise.
+Suggest ONE alternative exercise that:
+1. Targets the same muscle group (${muscle})
+2. Requires no special machine — use bodyweight, resistance bands, or dumbbells only
+3. Is equally effective for muscle activation
 
 Reply ONLY with valid JSON (no markdown):
-{"verified":true or false,"confidence":0-1,"detected_exercise":"what you see or null","reason":"one short sentence"}`;
+{
+  "name": "Exercise Name",
+  "detail": "3 × 12 reps · bodyweight · 60s rest",
+  "muscle": "${muscle}",
+  "sets": "3 sets × 12 reps",
+  "instructions": "Step by step form cues in 2-3 sentences."
+}`;
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -62,8 +58,8 @@ Reply ONLY with valid JSON (no markdown):
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 100,
-        messages: [{ role: 'user', content: [...imageFrames, { type: 'text', text: prompt }] }],
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }],
       }),
     });
 
@@ -74,8 +70,7 @@ Reply ONLY with valid JSON (no markdown):
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) throw new Error(`Bad response: ${text.slice(0, 200)}`);
 
-    return json(JSON.parse(match[0]));
-
+    return json({ exercise: JSON.parse(match[0]) });
   } catch (err: any) {
     return json({ error: err.message }, 500);
   }

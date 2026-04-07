@@ -10,6 +10,10 @@ interface AppState {
   isOnboarded: boolean;
   setIsOnboarded: (v: boolean) => void;
 
+  // Pending onboarding step after payment redirect
+  pendingOnboardingStep: string | null;
+  setPendingOnboardingStep: (step: string | null) => void;
+
   // Workout tracking
   exerciseDone: boolean[];
   toggleExercise: (index: number) => void;
@@ -35,6 +39,9 @@ export const useAppStore = create<AppState>()((set) => ({
 
   isOnboarded: false,
   setIsOnboarded: (v) => set({ isOnboarded: v }),
+
+  pendingOnboardingStep: null,
+  setPendingOnboardingStep: (step) => set({ pendingOnboardingStep: step }),
 
   exerciseDone: [true, true, true, false, false],
   toggleExercise: (index) =>

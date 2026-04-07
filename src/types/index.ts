@@ -24,6 +24,7 @@ export type OnboardingStackParamList = {
   SignUp: undefined;
   Login: undefined;
   Subscription: undefined;
+  PaymentSuccess: undefined;
   Setup: undefined;
   BodyScan: undefined;
   Analyzing: undefined;

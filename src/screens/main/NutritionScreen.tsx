@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Modal, ActivityIndicator, Image, Platform,
+  Modal, ActivityIndicator, Image, Platform, TextInput, KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -38,6 +38,80 @@ interface PendingMeal {
 
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 
+async function callEdgeFunction(name: string, body: object) {
+  const { data: { user } } = await supabase.auth.getUser();
+  console.log('[callEdgeFunction] user:', user?.id, 'email:', user?.email);
+  const { data: { session } } = await supabase.auth.getSession();
+  console.log('[callEdgeFunction] token:', session?.access_token?.slice(0, 40));
+  const token = session?.access_token;
+  if (!token) throw new Error('No session — please log out and back in');
+  const url = `${SUPABASE_URL}/functions/v1/${name}`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    console.log('[callEdgeFunction] status:', res.status, 'data:', JSON.stringify(data).slice(0, 200));
+    return data;
+  } catch (e: any) {
+    console.error('[callEdgeFunction] fetch threw:', e.message);
+    throw new Error(`Network error: ${e.message}`);
+  }
+}
+
+// Compute personalized macro targets from profile + body fat estimate
+function computeTargets(profile: any, bodyFatEstimate: string | null) {
+  const weight = profile?.weight_kg ?? 80;
+  const height = profile?.height_cm ?? 175;
+  const age    = profile?.age ?? 25;
+  const gender = profile?.gender ?? 0; // 0=Male,1=Female,2=Other
+  const goal   = profile?.goal ?? 0;   // 0=Muscle Gain,1=Fat Loss,2=Body Recomp,3=Endurance
+  const env    = profile?.environment ?? 0; // 0=Gym,1=Home
+
+  // Mifflin-St Jeor BMR
+  const bmrBase = (10 * weight) + (6.25 * height) - (5 * age);
+  const bmr = gender === 1 ? bmrBase - 161 : bmrBase + 5;
+
+  // Activity multiplier
+  const activityMult = env === 1 ? 1.375 : 1.55;
+  const tdee = bmr * activityMult;
+
+  // Parse body fat % from string like "18–22%" or "20-25%"
+  let bfPct = 20;
+  if (bodyFatEstimate) {
+    const nums = bodyFatEstimate.match(/\d+/g);
+    if (nums && nums.length >= 2) bfPct = (parseInt(nums[0]) + parseInt(nums[1])) / 2;
+    else if (nums && nums.length === 1) bfPct = parseInt(nums[0]);
+  }
+
+  // Lean body mass in kg
+  const lbm = weight * (1 - bfPct / 100);
+
+  // Calorie target by goal
+  const calMap = [tdee * 1.1, tdee * 0.83, tdee, tdee * 1.1]; // Muscle,Fat Loss,Recomp,Endurance
+  const calories = Math.round(calMap[goal] ?? tdee);
+
+  // Protein: higher for leaner / muscle gain; 2–2.4g per kg LBM
+  const proteinMultMap = [2.2, 2.4, 2.0, 1.6];
+  const protein = Math.round((proteinMultMap[goal] ?? 2.0) * lbm);
+  const proteinCals = protein * 4;
+
+  // Fat: 25–30% of calories
+  const fatPctMap = [0.25, 0.30, 0.27, 0.22];
+  const fat = Math.round((calories * (fatPctMap[goal] ?? 0.25)) / 9);
+  const fatCals = fat * 9;
+
+  // Carbs: remainder
+  const carbs = Math.max(Math.round((calories - proteinCals - fatCals) / 4), 50);
+
+  return { calories, protein, carbs, fat };
+}
+
 export default function NutritionScreen() {
   const [meals, setMeals]               = useState<LoggedMeal[]>([]);
   const [targets, setTargets]           = useState({ calories: 2500, protein: 180, carbs: 300, fat: 75 });
@@ -47,6 +121,9 @@ export default function NutritionScreen() {
   const [saving, setSaving]             = useState(false);
   const [localImageUri, setLocalImageUri] = useState<string | null>(null);
   const [logError, setLogError]         = useState('');
+  const [textModalVisible, setTextModalVisible] = useState(false);
+  const [foodText, setFoodText]         = useState('');
+  const [textAnalyzing, setTextAnalyzing] = useState(false);
 
   const fetchData = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -54,23 +131,54 @@ export default function NutritionScreen() {
 
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
-    const [mealRes, planRes] = await Promise.all([
+    const [mealRes, profileRes, workoutRes] = await Promise.all([
       supabase.from('meal_logs').select('*').eq('user_id', user.id)
         .gte('logged_at', today.toISOString()).order('logged_at', { ascending: false }),
-      supabase.from('meal_plans').select('plan').eq('user_id', user.id).single(),
+      supabase.from('profiles').select('age, weight_kg, height_cm, gender, goal, environment').eq('id', user.id).single(),
+      supabase.from('workout_plans').select('plan').eq('user_id', user.id).single(),
     ]);
 
     if (mealRes.data) setMeals(mealRes.data);
-    const p = (planRes as any)?.data?.plan;
-    if (p?.daily_calories) setTargets({
-      calories: p.daily_calories,
-      protein:  p.daily_protein_g  ?? 180,
-      carbs:    p.daily_carbs_g    ?? 300,
-      fat:      p.daily_fat_g      ?? 75,
-    });
+
+    const profile = profileRes.data;
+    const workoutPlan = (workoutRes as any)?.data?.plan;
+
+    // Prefer AI-computed macros from body analysis; fall back to formula
+    if (workoutPlan?.daily_calories) {
+      setTargets({
+        calories: workoutPlan.daily_calories,
+        protein:  workoutPlan.daily_protein_g ?? 180,
+        carbs:    workoutPlan.daily_carbs_g   ?? 250,
+        fat:      workoutPlan.daily_fat_g     ?? 70,
+      });
+    } else {
+      setTargets(computeTargets(profile, workoutPlan?.body_fat_estimate ?? null));
+    }
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  const handleLogManual = async () => {
+    const desc = foodText.trim();
+    if (!desc) return;
+    setTextAnalyzing(true);
+    setLogError('');
+    try {
+      const result = await callEdgeFunction('analyze-food', { textDescription: desc });
+      console.log('[analyze-food text] response:', JSON.stringify(result));
+      if (result?.error) throw new Error(result.error);
+      if (!result?.nutrition) throw new Error('Raw: ' + JSON.stringify(result));
+      setTextModalVisible(false);
+      setFoodText('');
+      setLocalImageUri(null);
+      setPendingMeal({ ...result.nutrition, imagePath: '' });
+      setModalVisible(true);
+    } catch (err: any) {
+      setLogError(err.message);
+    } finally {
+      setTextAnalyzing(false);
+    }
+  };
 
   const handleLogMeal = async () => {
     setLogError('');
@@ -100,20 +208,14 @@ export default function NutritionScreen() {
         reader.readAsDataURL(blob);
       });
 
-      const ext = (asset.uri.split('.').pop() ?? 'jpg').split('?')[0];
+      const mime = blob.type || 'image/jpeg';
+      const ext = mime.split('/')[1]?.replace('jpeg', 'jpg') ?? 'jpg';
       const imagePath = `${user.id}/${Date.now()}.${ext}`;
       supabase.storage.from('food-photos').upload(imagePath, blob, { upsert: false, contentType: `image/${ext}` });
 
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-food`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ imageData: base64, mimeType: blob.type || 'image/jpeg' }),
-      });
-
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      if (!json.nutrition) throw new Error('Raw response: ' + JSON.stringify(json));
+      const json = await callEdgeFunction('analyze-food', { imageData: base64, mimeType: blob.type || 'image/jpeg' });
+      if (json?.error) throw new Error(json.error);
+      if (!json?.nutrition) throw new Error('Raw response: ' + JSON.stringify(json));
 
       setPendingMeal({ ...json.nutrition, imagePath });
       setModalVisible(true);
@@ -229,24 +331,34 @@ export default function NutritionScreen() {
           </View>
         </Card>
 
-        {/* Log meal CTA */}
-        <TouchableOpacity
-          style={[styles.addMealBtn, analyzing && styles.addMealBtnDisabled]}
-          onPress={handleLogMeal}
-          disabled={analyzing}
-        >
-          {analyzing ? (
-            <>
-              <ActivityIndicator color={COLORS.lime} size="small" />
-              <Text style={styles.addMealText}>Analyzing photo...</Text>
-            </>
-          ) : (
-            <>
+        {/* Track meals CTA */}
+        <View style={styles.trackPrompt}>
+          <Text style={styles.trackPromptTitle}>Track every meal to hit your targets</Text>
+          <Text style={styles.trackPromptSub}>Snap a photo of what you eat — AI identifies calories, protein, carbs & fat instantly.</Text>
+        </View>
+
+        <View style={styles.addMealRow}>
+          <TouchableOpacity
+            style={[styles.addMealBtn, styles.addMealBtnPrimary, analyzing && styles.addMealBtnDisabled]}
+            onPress={handleLogMeal}
+            disabled={analyzing}
+          >
+            {analyzing ? (
+              <ActivityIndicator color={COLORS.black} size="small" />
+            ) : (
               <Text style={styles.addMealIcon}>📸</Text>
-              <Text style={styles.addMealText}>Scan a Meal</Text>
-            </>
-          )}
-        </TouchableOpacity>
+            )}
+            <Text style={styles.addMealText}>{analyzing ? 'Analyzing...' : 'Scan Meal'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.addMealBtn, styles.addMealBtnSecondary]}
+            onPress={() => { setLogError(''); setTextModalVisible(true); }}
+          >
+            <Text style={styles.addMealIcon}>✏️</Text>
+            <Text style={[styles.addMealText, { color: COLORS.text }]}>Log Manually</Text>
+          </TouchableOpacity>
+        </View>
         {logError ? <Text style={styles.logError}>{logError}</Text> : null}
 
         {/* Today's log */}
@@ -287,6 +399,34 @@ export default function NutritionScreen() {
 
         <View style={{ height: 24 }} />
       </ScrollView>
+
+      {/* Manual Food Entry Modal */}
+      <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
+          <View style={styles.sheet}>
+            <View style={styles.handle} />
+            <Text style={styles.mealNameLarge}>Log Manually</Text>
+            <Text style={styles.mealDescLarge}>Describe what you ate — quantities, cooking method, any extras.</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="e.g. 5 egg whites with 1 oil spray and spinach"
+              placeholderTextColor={COLORS.text3}
+              value={foodText}
+              onChangeText={setFoodText}
+              multiline
+              numberOfLines={3}
+              autoFocus
+            />
+            <Button
+              title={textAnalyzing ? 'Calculating...' : 'Calculate Macros'}
+              onPress={handleLogManual}
+              disabled={textAnalyzing || !foodText.trim()}
+              style={{ marginTop: 16 }}
+            />
+            <Button title="Cancel" variant="ghost" onPress={() => { setTextModalVisible(false); setFoodText(''); }} style={{ marginTop: 8 }} />
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* AI Analysis Modal */}
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
@@ -364,15 +504,23 @@ const styles = StyleSheet.create({
   macroTarget: { fontSize: 10, color: COLORS.text3, fontWeight: '500' },
 
   // Add meal
+  addMealRow: { flexDirection: 'row', marginHorizontal: 22, marginTop: 16, gap: 10 },
   addMealBtn: {
-    marginHorizontal: 22, marginTop: 16, height: 56,
-    backgroundColor: COLORS.lime, borderRadius: 16,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    flex: 1, height: 56, borderRadius: 16,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
   },
+  addMealBtnPrimary: { backgroundColor: COLORS.lime },
+  addMealBtnSecondary: { backgroundColor: COLORS.surface2, borderWidth: 1.5, borderColor: COLORS.border },
   addMealBtnDisabled: { opacity: 0.6 },
-  addMealIcon: { fontSize: 20 },
-  addMealText: { fontSize: 15, fontWeight: '800', color: COLORS.black },
+  addMealIcon: { fontSize: 18 },
+  addMealText: { fontSize: 14, fontWeight: '800', color: COLORS.black },
   logError: { fontSize: 12, color: COLORS.red, marginHorizontal: 22, marginTop: 8, textAlign: 'center' },
+  textInput: {
+    backgroundColor: COLORS.surface, borderRadius: 14, padding: 14,
+    color: COLORS.text, fontSize: 14, lineHeight: 22,
+    borderWidth: 1.5, borderColor: COLORS.border, minHeight: 90,
+    textAlignVertical: 'top',
+  },
 
   // Meal list
   sectionTitle: { fontSize: 10, fontWeight: '700', color: COLORS.text3, letterSpacing: 1.5, paddingHorizontal: 22, marginTop: 24, marginBottom: 12 },
@@ -408,4 +556,7 @@ const styles = StyleSheet.create({
   scoreCircle: { width: 56, height: 56, borderRadius: 28, borderWidth: 2, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
   scoreLetter: { fontSize: 24, fontWeight: '900' },
   scoreCaption: { fontSize: 11, color: COLORS.text3, textTransform: 'uppercase', letterSpacing: 1 },
+  trackPrompt: { marginHorizontal: 22, marginTop: 16, marginBottom: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border },
+  trackPromptTitle: { fontSize: 14, fontWeight: '800', color: COLORS.text, marginBottom: 4 },
+  trackPromptSub: { fontSize: 12, color: COLORS.text2, lineHeight: 18 },
 });

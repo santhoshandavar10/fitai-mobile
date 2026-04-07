@@ -32,20 +32,22 @@ const PLAN_KEYS = ['monthly', 'quarterly'];
 
 export default function SubscriptionScreen({ navigation }: Props) {
   const [selectedPlan, setSelectedPlan] = useState(1);
-  const [accountability, setAccountability] = useState<boolean | null>(null);
+  const [accountability, setAccountability] = useState<boolean>(false);
   const [loading, setLoading] = useState(false);
 
   const handleContinue = async () => {
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not logged in');
+      // Force refresh session to ensure token is valid
+      await supabase.auth.refreshSession();
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      console.log('session:', session?.access_token?.slice(0, 30), 'error:', sessionError?.message);
+      if (sessionError || !session) throw new Error('Not logged in — please sign in again.');
+      const user = session.user;
 
       await supabase.from('profiles')
         .update({ accountability_enabled: accountability })
         .eq('id', user.id);
-
-      const { data: { session } } = await supabase.auth.getSession();
 
       const res = await fetch(
         'https://nxauqxctaqzivjfxdjdu.supabase.co/functions/v1/create-checkout',
@@ -57,17 +59,22 @@ export default function SubscriptionScreen({ navigation }: Props) {
           },
           body: JSON.stringify({
             plan: PLAN_KEYS[selectedPlan],
-            successUrl: 'http://localhost:8081?checkout=success',
-            cancelUrl: 'http://localhost:8081?checkout=cancelled',
+            successUrl: typeof window !== 'undefined' ? 'http://localhost:8081?checkout=success' : 'fitai://checkout/success',
+            cancelUrl: typeof window !== 'undefined' ? 'http://localhost:8081?checkout=cancelled' : 'fitai://checkout/cancelled',
           }),
         }
       );
 
-      const { url, error } = await res.json();
-      if (error) throw new Error(error);
+      const body = await res.json();
+      console.log('checkout response:', JSON.stringify(body));
+      if (body.error) throw new Error(body.error);
+      if (!body.url) throw new Error(`No URL. Response: ${JSON.stringify(body)}`);
 
-      Linking.openURL(url);
-      navigation.navigate('BodyScan');
+      if (typeof window !== 'undefined') {
+        window.location.href = body.url;
+      } else {
+        Linking.openURL(body.url);
+      }
     } catch (err: any) {
       Alert.alert('Error', err.message);
     } finally {
@@ -157,6 +164,7 @@ export default function SubscriptionScreen({ navigation }: Props) {
           disabled={accountability === null || loading}
           style={{ marginTop: 24 }}
         />
+
 
         <Text style={styles.legalNote}>
           Free for 3 days. After trial, billed as selected above. Cancel anytime before trial ends to avoid charges.

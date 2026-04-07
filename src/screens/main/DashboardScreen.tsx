@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Svg, { Circle, Path, Defs, LinearGradient as SvgGradient, Stop } from 'react-native-svg';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../../constants/colors';
 import { useAppStore } from '../../store/useAppStore';
 import { supabase } from '../../lib/supabase';
@@ -9,24 +11,47 @@ import Toast from '../../components/Toast';
 
 const DAY_SHORT = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
-interface Exercise {
-  name: string;
-  detail: string;
-  muscle: string;
-  sets: string;
-}
+const WORKOUT_COLORS: Record<string, string> = {
+  Push:       COLORS.orange,
+  Pull:       COLORS.cyan,
+  Legs:       COLORS.purple,
+  Arms:       COLORS.lime,
+  Core:       '#FF6B9D',
+  Cardio:     '#00D4FF',
+  Full:       COLORS.lime,
+  REST:       COLORS.text3,
+};
 
-interface WorkoutDay {
-  day: string;
-  type: string;
-  rest: boolean;
-}
+interface Exercise { name: string; detail: string; muscle: string; sets: string; }
+interface WorkoutDay { day: string; type: string; rest: boolean; }
+interface Profile { name: string | null; weight_kg: number | null; goal: number | null; accountability_enabled: boolean | null; }
 
-interface Profile {
-  name: string | null;
-  weight_kg: number | null;
-  goal: number | null;
-  accountability_enabled: boolean | null;
+function CalorieRing({ percent }: { percent: number }) {
+  const size = 108;
+  const stroke = 9;
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const filled = circ * Math.min(percent / 100, 1);
+  return (
+    <Svg width={size} height={size}>
+      <Defs>
+        <SvgGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0" stopColor="#F75855" />
+          <Stop offset="1" stopColor="#FF8C42" />
+        </SvgGradient>
+      </Defs>
+      <Circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(255,255,255,0.05)" strokeWidth={stroke} fill="none" />
+      <Circle
+        cx={size / 2} cy={size / 2} r={r}
+        stroke="url(#ringGrad)"
+        strokeWidth={stroke}
+        fill="none"
+        strokeDasharray={`${filled} ${circ}`}
+        strokeLinecap="round"
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      />
+    </Svg>
+  );
 }
 
 export default function DashboardScreen() {
@@ -50,7 +75,7 @@ export default function DashboardScreen() {
   const today = new Date();
   const dayIndex = today.getDay();
   const todayShort = DAY_SHORT[dayIndex];
-  const dateLabel = today.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }).toUpperCase();
+  const dateLabel = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
   const load = useCallback(async () => {
     try {
@@ -60,7 +85,6 @@ export default function DashboardScreen() {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
 
-      // Run queries individually so one failure doesn't block others
       const profileRes = await supabase.from('profiles')
         .select('name, weight_kg, goal, accountability_enabled')
         .eq('id', user.id).single();
@@ -71,13 +95,12 @@ export default function DashboardScreen() {
         .gte('logged_at', todayStart.toISOString());
 
       const workoutPlanRes = await supabase.from('workout_plans')
-        .select('plan, body_assessment')
-        .eq('user_id', user.id).single();
+        .select('plan')
+        .eq('user_id', user.id).maybeSingle();
 
-      // meal_plans may not exist yet — catch gracefully
       const mealPlanRes = await supabase.from('meal_plans')
         .select('plan')
-        .eq('user_id', user.id).single().catch(() => ({ data: null }));
+        .eq('user_id', user.id).maybeSingle();
 
       const weekStart = new Date();
       weekStart.setDate(weekStart.getDate() - weekStart.getDay());
@@ -85,10 +108,8 @@ export default function DashboardScreen() {
       const workoutLogsRes = await supabase.from('workout_logs')
         .select('id', { count: 'exact' })
         .eq('user_id', user.id)
-        .gte('logged_at', weekStart.toISOString())
-        .catch(() => ({ count: 0 }));
+        .gte('logged_at', weekStart.toISOString());
 
-      // Streak: fetch last 60 days of logs, count consecutive days with workouts
       const streakStart = new Date();
       streakStart.setDate(streakStart.getDate() - 60);
       const { data: streakLogs } = await supabase.from('workout_logs')
@@ -101,12 +122,8 @@ export default function DashboardScreen() {
         const days = new Set(streakLogs.map(l => new Date(l.logged_at).toDateString()));
         let s = 0;
         const check = new Date();
-        // allow today or yesterday to start streak
         if (!days.has(check.toDateString())) check.setDate(check.getDate() - 1);
-        while (days.has(check.toDateString())) {
-          s++;
-          check.setDate(check.getDate() - 1);
-        }
+        while (days.has(check.toDateString())) { s++; check.setDate(check.getDate() - 1); }
         setStreak(s);
       }
 
@@ -114,10 +131,8 @@ export default function DashboardScreen() {
       if ((workoutLogsRes as any).count !== null) setWeeklyWorkouts((workoutLogsRes as any).count ?? 0);
 
       if (mealLogsRes.data) {
-        const cals = mealLogsRes.data.reduce((s: number, m: any) => s + (m.calories ?? 0), 0);
-        const prot = mealLogsRes.data.reduce((s: number, m: any) => s + Number(m.protein_g ?? 0), 0);
-        setTodayCalories(cals);
-        setTodayProtein(prot);
+        setTodayCalories(mealLogsRes.data.reduce((s: number, m: any) => s + (m.calories ?? 0), 0));
+        setTodayProtein(mealLogsRes.data.reduce((s: number, m: any) => s + Number(m.protein_g ?? 0), 0));
       }
 
       if ((mealPlanRes as any)?.data?.plan) {
@@ -130,7 +145,6 @@ export default function DashboardScreen() {
         const plan = workoutPlanRes.data.plan as any;
         const schedule: WorkoutDay[] = plan.week_schedule ?? [];
         const todaySchedule = schedule.find((d: WorkoutDay) => d.day === todayShort);
-
         if (todaySchedule && !todaySchedule.rest) {
           setTodayType(todaySchedule.type);
           const exercises: Exercise[] = plan.workouts?.[todaySchedule.type] ?? [];
@@ -152,12 +166,8 @@ export default function DashboardScreen() {
   const toggleExercise = (i: number) => {
     setCompletedExercises((prev) => {
       const next = [...prev];
-      const wasOff = !next[i];
       next[i] = !next[i];
-      if (wasOff) {
-        showToast('💪 Exercise complete!');
-        setTimeout(hideToast, 2000);
-      }
+      if (!prev[i]) { showToast('Exercise complete!'); setTimeout(hideToast, 2000); }
       return next;
     });
   };
@@ -165,9 +175,10 @@ export default function DashboardScreen() {
   const doneCount = completedExercises.filter(Boolean).length;
   const caloriePercent = Math.min(Math.round((todayCalories / calorieTarget) * 100), 100);
   const remaining = Math.max(calorieTarget - todayCalories, 0);
-
-  const userName = profile?.name?.split(' ')[0] ?? 'There';
-  const greeting = dayIndex === 0 || dayIndex === 6 ? 'Rest well' : 'Let\'s go';
+  const userName = profile?.name?.split(' ')[0] ?? 'Athlete';
+  const hour = today.getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const workoutColor = todayType ? (WORKOUT_COLORS[todayType] ?? COLORS.lime) : COLORS.lime;
 
   if (loading) {
     return (
@@ -182,135 +193,155 @@ export default function DashboardScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.dayLabel}>{dateLabel}</Text>
-          <Text style={styles.greeting}>
-            {greeting},{'\n'}<Text style={styles.greetingAccent}>{userName}</Text>
-          </Text>
-          {profile?.accountability_enabled && (() => {
-            const needed = Math.max(3 - weeklyWorkouts, 0);
-            const safe = weeklyWorkouts >= 3;
-            return (
-              <View style={[styles.accountBadge, safe ? styles.accountBadgeSafe : styles.accountBadgeRisk]}>
-                <View style={[styles.accountDot, { backgroundColor: safe ? COLORS.lime : COLORS.red }]} />
-                <Text style={[styles.accountBadgeText, { color: safe ? COLORS.lime : COLORS.red }]}>
-                  {safe
-                    ? `Safe this week · ${weeklyWorkouts}/3 workouts`
-                    : needed === 1
-                    ? `1 workout away from $10 fee`
-                    : `${needed} workouts needed — $10 at risk`}
-                </Text>
-              </View>
-            );
-          })()}
+
+        {/* Hero Header */}
+        <LinearGradient
+          colors={['rgba(247,88,85,0.1)', 'transparent']}
+          style={styles.heroGradient}
+        >
+          <Text style={styles.dateLabel}>{dateLabel}</Text>
+          <Text style={styles.greeting}>{greeting},</Text>
+          <Text style={styles.greetingName}>{userName.toUpperCase()}</Text>
+          {todayType && todayType !== 'REST' && (
+            <View style={[styles.todayBadge, { backgroundColor: workoutColor + '18', borderColor: workoutColor + '40' }]}>
+              <View style={[styles.todayDot, { backgroundColor: workoutColor }]} />
+              <Text style={[styles.todayBadgeText, { color: workoutColor }]}>
+                {todayType} Day · Let's crush it
+              </Text>
+            </View>
+          )}
+          {todayType === 'REST' && (
+            <View style={[styles.todayBadge, { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.1)' }]}>
+              <Text style={styles.todayBadgeText}>Rest & Recover Today</Text>
+            </View>
+          )}
+        </LinearGradient>
+
+        {/* Accountability badge */}
+        {profile?.accountability_enabled && (() => {
+          const needed = Math.max(3 - weeklyWorkouts, 0);
+          const safe = weeklyWorkouts >= 3;
+          return (
+            <View style={[styles.accountBadge, safe ? styles.accountBadgeSafe : styles.accountBadgeRisk]}>
+              <View style={[styles.accountDot, { backgroundColor: safe ? COLORS.lime : COLORS.red }]} />
+              <Text style={[styles.accountBadgeText, { color: safe ? COLORS.lime : COLORS.red }]}>
+                {safe ? `Safe this week · ${weeklyWorkouts}/3 workouts` : needed === 1 ? `1 workout away from $10 fee` : `${needed} workouts needed — $10 at risk`}
+              </Text>
+            </View>
+          );
+        })()}
+
+        {/* Stats Row */}
+        <View style={styles.statsRow}>
+          <View style={styles.statPill}>
+            <Text style={[styles.statPillValue, { color: COLORS.lime }]}>{weeklyWorkouts}</Text>
+            <Text style={styles.statPillLabel}>Workouts{'\n'}this week</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statPill}>
+            <Text style={[styles.statPillValue, { color: streak > 0 ? COLORS.orange : COLORS.text3 }]}>{streak}</Text>
+            <Text style={styles.statPillLabel}>Day{'\n'}streak</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statPill}>
+            <Text style={[styles.statPillValue, { color: COLORS.cyan }]}>{caloriePercent}%</Text>
+            <Text style={styles.statPillLabel}>Calorie{'\n'}goal</Text>
+          </View>
         </View>
 
         {/* Calorie Card */}
         <Card style={styles.calorieCard}>
           <Text style={styles.cardLabel}>TODAY'S NUTRITION</Text>
           <View style={styles.calorieRow}>
-            <View style={styles.ringContainer}>
-              <View style={styles.ringOuter}>
-                <View style={styles.ringCenter}>
-                  <Text style={styles.ringPercent}>{caloriePercent}%</Text>
-                  <Text style={styles.ringLabel}>CALORIES</Text>
-                </View>
+            <View style={styles.ringWrap}>
+              <CalorieRing percent={caloriePercent} />
+              <View style={styles.ringCenter}>
+                <Text style={styles.ringPercent}>{caloriePercent}%</Text>
+                <Text style={styles.ringLabel}>FILLED</Text>
               </View>
             </View>
-            <View style={styles.calorieStats}>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: COLORS.lime }]}>{todayCalories.toLocaleString()}</Text>
-                <Text style={styles.statLabel}>KCAL CONSUMED</Text>
+            <View style={styles.macroList}>
+              <View style={styles.macroItem}>
+                <View style={[styles.macroDot, { backgroundColor: COLORS.lime }]} />
+                <View>
+                  <Text style={styles.macroValue}>{todayCalories.toLocaleString()} kcal</Text>
+                  <Text style={styles.macroLabel}>Consumed</Text>
+                </View>
               </View>
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { color: COLORS.red }]}>{Math.round(todayProtein)}g</Text>
-                <Text style={styles.statLabel}>PROTEIN TODAY</Text>
+              <View style={styles.macroItem}>
+                <View style={[styles.macroDot, { backgroundColor: COLORS.cyan }]} />
+                <View>
+                  <Text style={styles.macroValue}>{Math.round(todayProtein)}g</Text>
+                  <Text style={styles.macroLabel}>Protein</Text>
+                </View>
               </View>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{remaining.toLocaleString()}</Text>
-                <Text style={styles.statLabel}>KCAL REMAINING</Text>
+              <View style={styles.macroItem}>
+                <View style={[styles.macroDot, { backgroundColor: COLORS.text3 }]} />
+                <View>
+                  <Text style={styles.macroValue}>{remaining.toLocaleString()} kcal</Text>
+                  <Text style={styles.macroLabel}>Remaining</Text>
+                </View>
               </View>
             </View>
           </View>
           <View style={styles.targetRow}>
-            <Text style={styles.targetText}>Target: {calorieTarget.toLocaleString()} kcal · {proteinTarget}g protein</Text>
+            <Text style={styles.targetText}>Target {calorieTarget.toLocaleString()} kcal · {proteinTarget}g protein</Text>
           </View>
         </Card>
 
         {/* Today's Workout */}
         {todayType === 'REST' ? (
-          <Card style={styles.restCard}>
+          <LinearGradient colors={['rgba(255,255,255,0.04)', 'rgba(255,255,255,0.02)']} style={styles.restCard}>
+            <Text style={styles.restEmoji}>🌙</Text>
             <Text style={styles.restTitle}>Rest Day</Text>
-            <Text style={styles.restSub}>Recovery is part of the plan. Stretch, hydrate, sleep well.</Text>
-          </Card>
+            <Text style={styles.restSub}>Recovery is where the gains happen. Stretch, hydrate, sleep 8 hours.</Text>
+          </LinearGradient>
         ) : todayExercises.length > 0 ? (
-          <Card style={styles.workoutCard}>
-            <View style={styles.workoutHeader}>
-              <View>
-                <Text style={styles.workoutTitle}>{todayType} Day · Today</Text>
-                <Text style={styles.workoutSub}>{doneCount}/{todayExercises.length} EXERCISES DONE</Text>
-              </View>
-              <View style={[styles.workoutProgress, { backgroundColor: doneCount === todayExercises.length ? COLORS.limeDim : COLORS.surface3 }]}>
-                <Text style={[styles.workoutProgressText, { color: doneCount === todayExercises.length ? COLORS.lime : COLORS.text3 }]}>
-                  {doneCount === todayExercises.length ? '✓ DONE' : `${doneCount}/${todayExercises.length}`}
-                </Text>
-              </View>
-            </View>
-            {todayExercises.map((ex, i) => (
-              <TouchableOpacity
-                key={i}
-                onPress={() => toggleExercise(i)}
-                style={[styles.exerciseRow, i < todayExercises.length - 1 && styles.exerciseRowBorder]}
-              >
-                <View style={[styles.checkCircle, completedExercises[i] && styles.checkCircleDone]}>
-                  {completedExercises[i] && <Text style={styles.checkMark}>✓</Text>}
+          <View style={styles.workoutCard}>
+            <LinearGradient
+              colors={[workoutColor + '20', workoutColor + '05']}
+              style={styles.workoutCardGradient}
+            >
+              <View style={[styles.workoutAccentBar, { backgroundColor: workoutColor }]} />
+              <View style={styles.workoutHeader}>
+                <View>
+                  <Text style={styles.workoutTitle}>{todayType?.toUpperCase()} DAY</Text>
+                  <Text style={styles.workoutSub}>{doneCount}/{todayExercises.length} exercises · today</Text>
                 </View>
-                <View style={styles.exerciseInfo}>
-                  <Text style={[styles.exerciseName, completedExercises[i] && styles.exerciseDoneText]}>
-                    {ex.name}
+                <View style={[styles.workoutBadge, { backgroundColor: workoutColor + '25', borderColor: workoutColor + '50' }]}>
+                  <Text style={[styles.workoutBadgeText, { color: workoutColor }]}>
+                    {doneCount === todayExercises.length ? '✓ DONE' : `${doneCount}/${todayExercises.length}`}
                   </Text>
-                  <Text style={styles.exerciseMuscle}>{ex.muscle}</Text>
                 </View>
-                <Text style={styles.exerciseSets}>{ex.sets}</Text>
-              </TouchableOpacity>
-            ))}
-          </Card>
+              </View>
+            </LinearGradient>
+            <View style={styles.exerciseListWrap}>
+              {todayExercises.map((ex, i) => (
+                <TouchableOpacity
+                  key={i}
+                  onPress={() => toggleExercise(i)}
+                  style={[styles.exerciseRow, i < todayExercises.length - 1 && styles.exerciseRowBorder]}
+                >
+                  <View style={[styles.checkCircle, completedExercises[i] && { backgroundColor: workoutColor, borderColor: workoutColor }]}>
+                    {completedExercises[i] && <Text style={styles.checkMark}>✓</Text>}
+                  </View>
+                  <View style={styles.exerciseInfo}>
+                    <Text style={[styles.exerciseName, completedExercises[i] && styles.exerciseDoneText]}>{ex.name}</Text>
+                    <Text style={styles.exerciseMuscle}>{ex.muscle}</Text>
+                  </View>
+                  <Text style={styles.exerciseSets}>{ex.sets}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
         ) : (
           <Card style={styles.noWorkoutCard}>
-            <Text style={styles.noWorkoutText}>No workout plan yet. Complete onboarding to generate your AI plan.</Text>
+            <Text style={styles.noWorkoutTitle}>No Plan Yet</Text>
+            <Text style={styles.noWorkoutText}>Complete your profile setup to generate your AI workout plan.</Text>
           </Card>
         )}
 
-        {/* Quick Stats */}
-        <View style={styles.statsGrid}>
-          <Card style={styles.statCard}>
-            <Text style={[styles.bigStat, { color: COLORS.lime }]}>
-              {weeklyWorkouts}<Text style={styles.bigStatUnit}>/wk</Text>
-            </Text>
-            <Text style={styles.statCardLabel}>Workouts{'\n'}This Week</Text>
-            <View style={styles.miniBar}>
-              <View style={[styles.miniBarFill, { width: `${Math.min((weeklyWorkouts / 6) * 100, 100)}%`, backgroundColor: COLORS.lime }]} />
-            </View>
-          </Card>
-          <Card style={styles.statCard}>
-            <Text style={[styles.bigStat, { color: streak > 0 ? COLORS.orange : COLORS.text }]}>
-              {streak}<Text style={styles.bigStatUnit}>d</Text>
-            </Text>
-            <Text style={styles.statCardLabel}>Workout{'\n'}Streak</Text>
-            <View style={styles.miniBar}>
-              <View style={[styles.miniBarFill, { width: `${Math.min((streak / 30) * 100, 100)}%`, backgroundColor: COLORS.orange }]} />
-            </View>
-          </Card>
-          <Card style={styles.statCard}>
-            <Text style={[styles.bigStat, { color: COLORS.cyan }]}>
-              {caloriePercent}<Text style={styles.bigStatUnit}>%</Text>
-            </Text>
-            <Text style={styles.statCardLabel}>Calorie{'\n'}Goal</Text>
-          </Card>
-        </View>
-
-        <View style={{ height: 20 }} />
+        <View style={{ height: 24 }} />
       </ScrollView>
 
       <Toast message={toastMessage} visible={toastVisible} />
@@ -322,81 +353,67 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
   scroll: { paddingBottom: 20 },
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header: { paddingHorizontal: 22, paddingTop: 12, paddingBottom: 20 },
-  dayLabel: { fontSize: 12, color: COLORS.text3, letterSpacing: 1, marginBottom: 4, textTransform: 'uppercase' },
-  greeting: { fontSize: 36, fontWeight: '900', color: COLORS.text, textTransform: 'uppercase', lineHeight: 38 },
-  greetingAccent: { color: COLORS.lime },
-  accountBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 7,
-    marginTop: 12, alignSelf: 'flex-start',
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100, borderWidth: 1,
-  },
+
+  heroGradient: { paddingHorizontal: 22, paddingTop: 16, paddingBottom: 20 },
+  dateLabel: { fontSize: 11, color: COLORS.text3, letterSpacing: 1.5, marginBottom: 8, textTransform: 'uppercase' },
+  greeting: { fontSize: 16, color: COLORS.text2, fontWeight: '500' },
+  greetingName: { fontSize: 38, fontWeight: '900', color: COLORS.text, letterSpacing: -1, lineHeight: 40, marginBottom: 14 },
+  todayBadge: { flexDirection: 'row', alignItems: 'center', gap: 7, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 100, borderWidth: 1 },
+  todayDot: { width: 6, height: 6, borderRadius: 3 },
+  todayBadgeText: { fontSize: 12, fontWeight: '700', color: COLORS.text2 },
+
+  accountBadge: { flexDirection: 'row', alignItems: 'center', gap: 7, marginHorizontal: 22, marginBottom: 14, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100, borderWidth: 1 },
   accountBadgeSafe: { backgroundColor: 'rgba(200,255,0,0.08)', borderColor: 'rgba(200,255,0,0.25)' },
   accountBadgeRisk: { backgroundColor: 'rgba(255,71,87,0.08)', borderColor: 'rgba(255,71,87,0.25)' },
   accountDot: { width: 6, height: 6, borderRadius: 3 },
   accountBadgeText: { fontSize: 12, fontWeight: '700' },
-  calorieCard: { marginHorizontal: 22 },
-  cardLabel: { fontSize: 10, fontWeight: '700', color: COLORS.text3, letterSpacing: 1.5, marginBottom: 12 },
-  calorieRow: { flexDirection: 'row', alignItems: 'center', gap: 20 },
-  ringContainer: { width: 100, height: 100 },
-  ringOuter: {
-    width: 100, height: 100, borderRadius: 50, borderWidth: 8, borderColor: 'rgba(255,255,255,0.06)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  ringCenter: { alignItems: 'center' },
-  ringPercent: { fontSize: 20, fontWeight: '900', color: COLORS.text, letterSpacing: -1 },
+
+  statsRow: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 22, marginBottom: 16, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border },
+  statPill: { flex: 1, alignItems: 'center', gap: 3 },
+  statPillValue: { fontSize: 26, fontWeight: '900', letterSpacing: -0.5 },
+  statPillLabel: { fontSize: 9, color: COLORS.text3, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 0.5, lineHeight: 12 },
+  statDivider: { width: 1, height: 36, backgroundColor: COLORS.border },
+
+  calorieCard: { marginHorizontal: 22, marginBottom: 14 },
+  cardLabel: { fontSize: 10, fontWeight: '700', color: COLORS.text3, letterSpacing: 1.5, marginBottom: 14 },
+  calorieRow: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  ringWrap: { position: 'relative', width: 108, height: 108, alignItems: 'center', justifyContent: 'center' },
+  ringCenter: { position: 'absolute', alignItems: 'center' },
+  ringPercent: { fontSize: 22, fontWeight: '900', color: COLORS.text, letterSpacing: -1 },
   ringLabel: { fontSize: 7, color: COLORS.text3, letterSpacing: 1 },
-  calorieStats: { flex: 1 },
-  statItem: { marginBottom: 12 },
-  statValue: { fontSize: 26, fontWeight: '900', color: COLORS.text, letterSpacing: -0.5, lineHeight: 28 },
-  statLabel: { fontSize: 9, color: COLORS.text3, letterSpacing: 1, marginTop: 2 },
-  targetRow: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
+  macroList: { flex: 1, gap: 10 },
+  macroItem: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  macroDot: { width: 8, height: 8, borderRadius: 4 },
+  macroValue: { fontSize: 15, fontWeight: '700', color: COLORS.text, lineHeight: 17 },
+  macroLabel: { fontSize: 10, color: COLORS.text3 },
+  targetRow: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.border },
   targetText: { fontSize: 11, color: COLORS.text3 },
-  workoutCard: { marginHorizontal: 22, marginTop: 14, padding: 0 },
-  workoutHeader: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    padding: 16, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border,
-  },
-  workoutTitle: { fontSize: 17, fontWeight: '800', color: COLORS.text, textTransform: 'uppercase' },
-  workoutSub: { fontSize: 10, color: COLORS.text3, marginTop: 2 },
-  workoutProgress: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100 },
-  workoutProgressText: { fontSize: 11, fontWeight: '700' },
-  exerciseRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 },
-  exerciseRowBorder: { borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  checkCircle: {
-    width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: COLORS.border2,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  checkCircleDone: { backgroundColor: COLORS.lime, borderColor: COLORS.lime },
+
+  workoutCard: { marginHorizontal: 22, marginBottom: 14, backgroundColor: COLORS.surface, borderRadius: 18, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border },
+  workoutCardGradient: { position: 'relative', padding: 16 },
+  workoutAccentBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
+  workoutHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  workoutTitle: { fontSize: 19, fontWeight: '900', color: COLORS.text, letterSpacing: -0.3 },
+  workoutSub: { fontSize: 11, color: COLORS.text3, marginTop: 3 },
+  workoutBadge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 100, borderWidth: 1 },
+  workoutBadgeText: { fontSize: 11, fontWeight: '800' },
+  exerciseListWrap: {},
+  exerciseRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 13 },
+  exerciseRowBorder: { borderTopWidth: 1, borderTopColor: COLORS.border },
+  checkCircle: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: COLORS.border2, alignItems: 'center', justifyContent: 'center' },
   checkMark: { fontSize: 12, color: COLORS.black, fontWeight: '900' },
   exerciseInfo: { flex: 1 },
   exerciseName: { fontSize: 14, fontWeight: '600', color: COLORS.text },
   exerciseMuscle: { fontSize: 10, color: COLORS.text3, marginTop: 1 },
   exerciseDoneText: { color: COLORS.text3, textDecorationLine: 'line-through' },
   exerciseSets: { fontSize: 11, color: COLORS.text2 },
-  restCard: { marginHorizontal: 22, marginTop: 14, alignItems: 'center', paddingVertical: 28 },
-  restIcon: { fontSize: 40, marginBottom: 10 },
-  restTitle: { fontSize: 20, fontWeight: '900', color: COLORS.text, textTransform: 'uppercase' },
-  restSub: { fontSize: 13, color: COLORS.text2, textAlign: 'center', marginTop: 6, lineHeight: 20 },
-  noWorkoutCard: { marginHorizontal: 22, marginTop: 14 },
-  noWorkoutText: { fontSize: 14, color: COLORS.text3, textAlign: 'center' },
-  statsGrid: { flexDirection: 'row', gap: 10, marginHorizontal: 22, marginTop: 14 },
-  statCard: { flex: 1, padding: 14 },
-  bigStat: { fontSize: 24, fontWeight: '900', color: COLORS.text, letterSpacing: -0.5, lineHeight: 26 },
-  bigStatUnit: { fontSize: 13, color: COLORS.text3 },
-  statCardLabel: { fontSize: 9, color: COLORS.text3, textTransform: 'uppercase', letterSpacing: 0.8, marginTop: 4 },
-  miniBar: { height: 4, backgroundColor: COLORS.surface3, borderRadius: 2, overflow: 'hidden', marginTop: 8 },
-  miniBarFill: { height: '100%', borderRadius: 2 },
-  aiCard: {
-    marginHorizontal: 22, marginTop: 14,
-    backgroundColor: '#05120a', borderColor: 'rgba(200,255,0,0.15)',
-  },
-  aiRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  aiBadge: {
-    width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.lime,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  aiBadgeText: { fontSize: 13, fontWeight: '900', color: COLORS.black },
-  aiLabel: { fontSize: 9, fontWeight: '700', color: 'rgba(200,255,0,0.5)', letterSpacing: 1.5, marginBottom: 4 },
-  aiText: { fontSize: 13, color: COLORS.text2, lineHeight: 20 },
+
+  restCard: { marginHorizontal: 22, marginBottom: 14, borderRadius: 18, padding: 28, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
+  restEmoji: { fontSize: 36, marginBottom: 10 },
+  restTitle: { fontSize: 22, fontWeight: '900', color: COLORS.text, textTransform: 'uppercase', marginBottom: 8 },
+  restSub: { fontSize: 13, color: COLORS.text2, textAlign: 'center', lineHeight: 20 },
+
+  noWorkoutCard: { marginHorizontal: 22, marginBottom: 14, alignItems: 'center', paddingVertical: 32 },
+  noWorkoutTitle: { fontSize: 16, fontWeight: '800', color: COLORS.text, marginBottom: 6 },
+  noWorkoutText: { fontSize: 13, color: COLORS.text3, textAlign: 'center', lineHeight: 20 },
 });

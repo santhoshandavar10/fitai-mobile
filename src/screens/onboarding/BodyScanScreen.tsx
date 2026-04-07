@@ -42,7 +42,8 @@ export default function BodyScanScreen({ navigation }: Props) {
       mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [3, 4],
-      quality: 0.8,
+      quality: 0.6,
+      exif: false,
     });
 
     if (result.canceled) return;
@@ -54,16 +55,27 @@ export default function BodyScanScreen({ navigation }: Props) {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not logged in');
 
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
-      const ext = asset.uri.split('.').pop() ?? 'jpg';
-      const path = `${user.id}/${POSES[index].label.toLowerCase()}.${ext}`;
+      const pose = POSES[index].label.toLowerCase();
+      // Save as week1_ prefix so it links with progress photo system
+      const path = `${user.id}/week1_${pose}.jpg`;
+      const uploadBlob = await fetch(asset.uri).then(r => r.blob());
 
       const { error } = await supabase.storage
         .from('body-photos')
-        .upload(path, blob, { upsert: true, contentType: `image/${ext}` });
+        .upload(path, uploadBlob, { upsert: true, contentType: 'image/jpeg' });
 
       if (error) throw error;
+
+      // Update week 1 progress_photos row with the newly uploaded pose URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('body-photos').getPublicUrl(path);
+      await supabase.from('progress_photos').upsert({
+        user_id: user.id,
+        week_number: 1,
+        [`${pose}_url`]: publicUrl,
+        uploaded_at: new Date().toISOString(),
+      }, { onConflict: 'user_id, week_number' });
+
       updatePhoto(index, { uploading: false, uploaded: true });
     } catch (err: any) {
       updatePhoto(index, { uploading: false, uploaded: false, uri: null });

@@ -13,26 +13,23 @@ const queryClient = new QueryClient();
 function AuthListener() {
   const setSession = useAppStore((s) => s.setSession);
   const setIsOnboarded = useAppStore((s) => s.setIsOnboarded);
+  const setPendingOnboardingStep = useAppStore((s) => s.setPendingOnboardingStep);
 
   useEffect(() => {
     // On web, check if returning from Stripe checkout
-    const checkoutSuccess =
-      Platform.OS === 'web' &&
-      typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('checkout') === 'success';
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('checkout') === 'success') {
+        setPendingOnboardingStep('PaymentSuccess');
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
 
     // Get initial session
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session);
       if (session) {
-        if (checkoutSuccess) {
-          // Payment done — store step so OnboardingStack can resume at BodyScan
-          localStorage.setItem('pending_onboarding_step', 'BodyScan');
-          window.history.replaceState({}, '', window.location.pathname);
-          await fetchProfile(session.user.id);
-        } else {
-          await fetchProfile(session.user.id);
-        }
+        await fetchProfile(session.user.id);
       }
     });
 

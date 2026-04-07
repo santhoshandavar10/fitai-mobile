@@ -29,7 +29,6 @@ interface EditState {
 
 export default function ProfileScreen() {
   const session = useAppStore((s) => s.session);
-  const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [profile, setProfile] = useState<any>(null);
   const [mealCount, setMealCount] = useState(0);
 
@@ -101,10 +100,7 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleLogout = () => {
-    if (confirmingLogout) { supabase.auth.signOut(); }
-    else { setConfirmingLogout(true); setTimeout(() => setConfirmingLogout(false), 4000); }
-  };
+  const handleLogout = () => { supabase.auth.signOut(); };
 
   const userName  = profile?.name ?? session?.user?.user_metadata?.name ?? 'User';
   const userEmail = session?.user?.email ?? '';
@@ -209,7 +205,7 @@ export default function ProfileScreen() {
         </Card>
 
         <Button
-          title={confirmingLogout ? 'Tap again to confirm' : 'Log Out'}
+          title="Log Out"
           variant="secondary"
           onPress={handleLogout}
           style={{ marginHorizontal: 22, marginTop: 20 }}

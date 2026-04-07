@@ -1,18 +1,26 @@
 {
   "expo": {
-    "name": "fitai-mobile",
+    "name": "FitAI",
     "slug": "fitai-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "scheme": "fitai",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0A0807"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.fitai.mobile",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "FitAI uses your camera to scan meals and track your progress.",
+        "NSPhotoLibraryUsageDescription": "FitAI needs access to your photos to upload body scan and meal photos.",
+        "NSPhotoLibraryAddUsageDescription": "FitAI saves progress photos to your library."
+      }
     },
     "android": {
       "adaptiveIcon": {

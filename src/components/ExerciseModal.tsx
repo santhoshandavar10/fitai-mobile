@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Modal, View, Text, TouchableOpacity, StyleSheet,
-  ScrollView, Animated, Easing, Platform,
+  ScrollView, Animated, Easing, Platform, ActivityIndicator,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { COLORS } from '../constants/colors';
 import { GYM_EXERCISES, MUSCLE_COLORS } from '../constants/mockData';
+import { supabase } from '../lib/supabase';
 import ExerciseAnimation from './ExerciseAnimation';
+
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 
 const ACircle = Animated.createAnimatedComponent(Circle);
 
@@ -49,6 +52,8 @@ export default function ExerciseModal({
   const [phase, setPhase]             = useState<Phase>('guide');
   const [currentSet, setCurrentSet]   = useState(1);
   const [restSeconds, setRestSeconds] = useState(60);
+  const [swappedExercise, setSwappedExercise] = useState<Exercise | null>(null);
+  const [swapping, setSwapping]       = useState(false);
 
   // Camera rep counting
   const [camMode, setCamMode]         = useState(false);
@@ -75,6 +80,25 @@ export default function ExerciseModal({
 
   useEffect(() => { targetRepsRef.current = targetReps; }, [targetReps]);
 
+  const handleSwapExercise = async () => {
+    if (!exercise) return;
+    setSwapping(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/swap-exercise`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ exerciseName: exercise.name, muscle: exercise.muscle }),
+      });
+      const data = await res.json();
+      if (data.exercise) setSwappedExercise(data.exercise);
+    } catch {
+      // silent fail
+    } finally {
+      setSwapping(false);
+    }
+  };
+
   // ── Reset on exercise change ─────────────────────────────────────────────
   useEffect(() => {
     setPhase('guide');
@@ -82,6 +106,7 @@ export default function ExerciseModal({
     setRepCount(0);
     repCountRef.current = 0;
     setCamMode(false);
+    setSwappedExercise(null);
     restAnim.setValue(0);
     stopCamera();
     if (restTimerRef.current) clearInterval(restTimerRef.current);
@@ -253,7 +278,8 @@ export default function ExerciseModal({
   };
 
   if (exerciseIndex === null || !exercise) return null;
-  const muscleColor = MUSCLE_COLORS[exercise.muscle] || COLORS.lime;
+  const displayExercise = swappedExercise ?? exercise;
+  const muscleColor = MUSCLE_COLORS[displayExercise.muscle] || COLORS.lime;
   const restRingOffset = restAnim.interpolate({ inputRange: [0, 1], outputRange: [RING_CIRC, 0] });
   const repProgress = Math.min(repCount / targetReps, 1);
   const isWeb = Platform.OS === 'web' && typeof navigator !== 'undefined' && !!(navigator as any).mediaDevices;
@@ -305,9 +331,12 @@ export default function ExerciseModal({
               <View style={styles.headerRow}>
                 <View style={{ flex: 1 }}>
                   <View style={[styles.muscleTag, { backgroundColor: muscleColor + '22' }]}>
-                    <Text style={[styles.muscleText, { color: muscleColor }]}>{exercise.muscle}</Text>
+                    <Text style={[styles.muscleText, { color: muscleColor }]}>{displayExercise.muscle}</Text>
                   </View>
-                  <Text style={styles.title}>{exercise.name}</Text>
+                  <Text style={styles.title}>{displayExercise.name}</Text>
+                  {swappedExercise && (
+                    <Text style={styles.swappedBadge}>↔ Swapped</Text>
+                  )}
                 </View>
                 {phase === 'workout' && (
                   <View style={styles.setBadge}>
@@ -372,7 +401,7 @@ export default function ExerciseModal({
               ) : phase === 'workout' ? (
                 /* ── MANUAL WORKOUT (no camera) ── */
                 <View style={styles.workoutSection}>
-                  <ExerciseAnimation exerciseName={exercise.name} muscle={exercise.muscle} compact />
+                  <ExerciseAnimation exerciseName={displayExercise.name} muscle={displayExercise.muscle} compact />
 
                   <View style={styles.repTargetCard}>
                     <Text style={styles.repTargetNum}>{targetReps}</Text>
@@ -401,15 +430,15 @@ export default function ExerciseModal({
               ) : (
                 /* ── GUIDE ── */
                 <>
-                  <ExerciseAnimation exerciseName={exercise.name} muscle={exercise.muscle} />
+                  <ExerciseAnimation exerciseName={displayExercise.name} muscle={displayExercise.muscle} />
 
                   <View style={styles.infoBlock}>
                     <Text style={styles.infoLabel}>SETS & REPS</Text>
-                    <Text style={styles.infoValue}>{exercise.sets}</Text>
+                    <Text style={styles.infoValue}>{displayExercise.sets}</Text>
                   </View>
                   <View style={styles.infoBlock}>
                     <Text style={styles.infoLabel}>HOW TO PERFORM</Text>
-                    {exercise.instructions.split('. ').filter(Boolean).map((step, i) => (
+                    {displayExercise.instructions.split('. ').filter(Boolean).map((step, i) => (
                       <View key={i} style={styles.stepRow}>
                         <View style={styles.stepNum}><Text style={styles.stepNumText}>{i + 1}</Text></View>
                         <Text style={styles.stepText}>{step.replace(/\.$/, '')}.</Text>
@@ -419,6 +448,29 @@ export default function ExerciseModal({
                   <TouchableOpacity style={styles.startBtn} onPress={() => { setRepCount(0); repCountRef.current = 0; setPhase('workout'); }} activeOpacity={0.85}>
                     <Text style={styles.startBtnText}>Start — Set 1 of {totalSets}</Text>
                     <Text style={styles.startBtnSub}>{targetReps} reps · use camera or track manually</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.swapBtn, swapping && { opacity: 0.6 }]}
+                    onPress={handleSwapExercise}
+                    disabled={swapping}
+                    activeOpacity={0.8}
+                  >
+                    {swapping ? (
+                      <>
+                        <ActivityIndicator size="small" color={COLORS.lime} />
+                        <Text style={styles.swapBtnText}>Finding alternative...</Text>
+                      </>
+                    ) : swappedExercise ? (
+                      <>
+                        <Text style={styles.swapBtnIcon}>↔</Text>
+                        <Text style={styles.swapBtnText}>Try a different alternative</Text>
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.swapBtnIcon}>↔</Text>
+                        <Text style={styles.swapBtnText}>Can't do this? Get an alternative</Text>
+                      </>
+                    )}
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.skipSetupBtn} onPress={handleMarkDone}>
                     <Text style={styles.skipSetupText}>Already done — mark complete</Text>
@@ -535,4 +587,8 @@ const styles = StyleSheet.create({
 
   closeBtn: { marginTop: 12, paddingVertical: 14, borderTopWidth: 1, borderTopColor: COLORS.border, alignItems: 'center' },
   closeBtnText: { fontSize: 14, color: COLORS.text3 },
+  swappedBadge: { fontSize: 10, fontWeight: '700', color: COLORS.lime, letterSpacing: 1, marginTop: 2 },
+  swapBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', borderWidth: 1.5, borderColor: COLORS.border2, borderRadius: 14, paddingVertical: 13, backgroundColor: COLORS.surface2, marginBottom: 2 },
+  swapBtnIcon: { fontSize: 16, color: COLORS.text2 },
+  swapBtnText: { fontSize: 13, fontWeight: '700', color: COLORS.text2 },
 });

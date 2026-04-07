@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../../constants/colors';
 import { MUSCLE_COLORS } from '../../constants/mockData';
 import { useAppStore } from '../../store/useAppStore';
@@ -24,12 +25,18 @@ interface DaySchedule {
 
 interface WorkoutPlan {
   body_assessment: string;
+  body_fat_estimate: string;
+  body_fat_category: string;
+  weeks_to_goal: number;
+  milestone_4wk: string;
+  milestone_8wk: string;
   week_schedule: DaySchedule[];
   workouts: Record<string, Exercise[]>;
 }
 
 const DAY_KEYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const DAY_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 
 export default function WorkoutScreen() {
   const selectedExercise = useAppStore((s) => s.selectedExercise);
@@ -47,6 +54,9 @@ export default function WorkoutScreen() {
 
   const [plan, setPlan] = useState<WorkoutPlan | null>(null);
   const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
+  const [planGenFailed, setPlanGenFailed] = useState(false);
+  const [regenError, setRegenError] = useState('');
   const [selectedDay, setSelectedDay] = useState(new Date().getDay());
   const [completed, setCompleted] = useState<boolean[]>([]);
   const [logged, setLogged] = useState(false);
@@ -59,7 +69,7 @@ export default function WorkoutScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setLoading(false); return; }
     const [planRes, historyRes] = await Promise.all([
-      supabase.from('workout_plans').select('plan').eq('user_id', user.id).single(),
+      supabase.from('workout_plans').select('plan').eq('user_id', user.id).maybeSingle(),
       supabase.from('workout_logs').select('*').eq('user_id', user.id)
         .order('logged_at', { ascending: false }).limit(10),
     ]);
@@ -69,6 +79,47 @@ export default function WorkoutScreen() {
   }, []);
 
   useEffect(() => { fetchPlan(); }, [fetchPlan]);
+
+  // Poll every 6s until plan arrives; give up after 90s
+  useEffect(() => {
+    if (plan || loading) return;
+    setPlanGenFailed(false);
+    let elapsed = 0;
+    const id = setInterval(async () => {
+      elapsed += 6;
+      if (elapsed >= 90) { clearInterval(id); setPlanGenFailed(true); return; }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase.from('workout_plans').select('plan').eq('user_id', user.id).maybeSingle();
+      if (data?.plan) { setPlan(data.plan as WorkoutPlan); clearInterval(id); }
+    }, 6000);
+    return () => clearInterval(id);
+  }, [plan, loading]);
+
+  const handleRegenerate = async () => {
+    setRegenerating(true);
+    setPlanGenFailed(false);
+    setRegenError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('No session — please log out and back in');
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-body`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({}),
+      });
+      const result = await res.json();
+      if (!res.ok || result.error) throw new Error(`${res.status}: ${result.error ?? JSON.stringify(result)}`);
+      await fetchPlan();
+      showToast('Plan generated!');
+      setTimeout(hideToast, 2500);
+    } catch (e: any) {
+      setRegenError(e.message ?? 'Unknown error');
+      setPlanGenFailed(true);
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   const weekSchedule = plan?.week_schedule ?? [];
   const selectedDayKey = DAY_KEYS[selectedDay];
@@ -121,10 +172,19 @@ export default function WorkoutScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
 
-        <View style={styles.header}>
-          <Text style={styles.heading}>Workout</Text>
-          <Text style={styles.subheading}>{DAY_FULL[todayIndex]}</Text>
-        </View>
+        <LinearGradient colors={['rgba(247,88,85,0.08)', 'transparent']} style={styles.header}>
+          <View style={styles.headerRow2}>
+            <View>
+              <Text style={styles.heading}>Workout</Text>
+              <Text style={styles.subheading}>{DAY_FULL[todayIndex]}</Text>
+            </View>
+            <TouchableOpacity style={styles.regenBtn} onPress={handleRegenerate} disabled={regenerating}>
+              {regenerating
+                ? <ActivityIndicator size="small" color={COLORS.lime} />
+                : <Text style={styles.regenBtnText}>↺ Regenerate</Text>}
+            </TouchableOpacity>
+          </View>
+        </LinearGradient>
 
         {/* Week strip */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekScroll}>
@@ -150,14 +210,84 @@ export default function WorkoutScreen() {
           </View>
         </ScrollView>
 
+        {/* AI Coach Report */}
+        {plan?.body_assessment ? (
+          <View style={styles.assessmentCard}>
+            <Text style={styles.assessmentLabel}>AI COACH REPORT</Text>
+
+            {/* Body fat + target date row */}
+            {plan.body_fat_estimate ? (
+              <View style={styles.metricsRow}>
+                <View style={styles.metricBox}>
+                  <Text style={styles.metricValue}>{plan.body_fat_estimate}</Text>
+                  <Text style={styles.metricLabel}>Body Fat</Text>
+                  {plan.body_fat_category ? (
+                    <Text style={styles.metricSub}>{plan.body_fat_category}</Text>
+                  ) : null}
+                </View>
+                {plan.weeks_to_goal ? (
+                  <View style={styles.metricBox}>
+                    <Text style={styles.metricValue}>
+                      {new Date(Date.now() + plan.weeks_to_goal * 7 * 24 * 60 * 60 * 1000)
+                        .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </Text>
+                    <Text style={styles.metricLabel}>Est. Goal Date</Text>
+                    <Text style={styles.metricSub}>if consistent</Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {/* Milestones */}
+            {plan.milestone_4wk ? (
+              <View style={styles.milestoneRow}>
+                <View style={styles.milestoneDot}><Text style={styles.milestoneDotText}>4W</Text></View>
+                <Text style={styles.milestoneText}>{plan.milestone_4wk}</Text>
+              </View>
+            ) : null}
+            {plan.milestone_8wk ? (
+              <View style={styles.milestoneRow}>
+                <View style={[styles.milestoneDot, { backgroundColor: COLORS.orange + '22' }]}>
+                  <Text style={[styles.milestoneDotText, { color: COLORS.orange }]}>8W</Text>
+                </View>
+                <Text style={styles.milestoneText}>{plan.milestone_8wk}</Text>
+              </View>
+            ) : null}
+
+            {/* Assessment paragraph */}
+            <View style={styles.assessmentDivider} />
+            <Text style={styles.assessmentText}>{plan.body_assessment}</Text>
+          </View>
+        ) : null}
+
         {loading ? (
           <View style={styles.center}>
             <ActivityIndicator color={COLORS.lime} />
           </View>
         ) : !plan ? (
           <View style={styles.center}>
-            <Text style={styles.emptyTitle}>No plan yet</Text>
-            <Text style={styles.emptyDesc}>Complete your profile setup and body scan to generate your personalized plan.</Text>
+            {planGenFailed ? (
+              <>
+                <Text style={styles.emptyTitle}>Generation failed</Text>
+                <Text style={styles.emptyDesc}>Tap retry to try again.</Text>
+                {regenError ? <View style={styles.errorBox}><Text style={styles.errorBoxText}>{regenError}</Text></View> : null}
+                <TouchableOpacity
+                  style={[styles.logBtn, { marginTop: 16, marginHorizontal: 0, paddingHorizontal: 28 }]}
+                  onPress={handleRegenerate}
+                  disabled={regenerating}
+                >
+                  {regenerating
+                    ? <ActivityIndicator color={COLORS.black} size="small" />
+                    : <Text style={styles.logBtnText}>Retry — Generate My Plan</Text>}
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <ActivityIndicator color={COLORS.lime} size="large" style={{ marginBottom: 16 }} />
+                <Text style={styles.emptyTitle}>Building your plan...</Text>
+                <Text style={styles.emptyDesc}>AI is analyzing your body and creating your personalized program. Takes ~30 seconds.</Text>
+              </>
+            )}
           </View>
         ) : isRest ? (
           <Card style={styles.restCard}>
@@ -365,4 +495,19 @@ const styles = StyleSheet.create({
   historyRight: { alignItems: 'flex-end' },
   historyPct: { fontSize: 16, fontWeight: '800', color: COLORS.text2 },
   historyMeta: { fontSize: 10, color: COLORS.text3, marginTop: 2 },
+  headerRow2: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  regenBtn: { backgroundColor: COLORS.surface2, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7, minWidth: 40, alignItems: 'center' },
+  regenBtnText: { fontSize: 12, fontWeight: '700', color: COLORS.lime },
+  metricsRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  metricBox: { flex: 1, backgroundColor: COLORS.surface2, borderRadius: 12, padding: 12 },
+  metricValue: { fontSize: 16, fontWeight: '900', color: COLORS.lime, marginBottom: 2 },
+  metricLabel: { fontSize: 9, fontWeight: '700', color: COLORS.text3, textTransform: 'uppercase', letterSpacing: 1 },
+  metricSub: { fontSize: 9, color: COLORS.text3, marginTop: 2, fontStyle: 'italic' },
+  milestoneRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 10 },
+  milestoneDot: { backgroundColor: COLORS.limeDim, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3, minWidth: 30, alignItems: 'center' },
+  milestoneDotText: { fontSize: 9, fontWeight: '900', color: COLORS.lime, letterSpacing: 0.5 },
+  milestoneText: { flex: 1, fontSize: 12, color: COLORS.text2, lineHeight: 18 },
+  assessmentDivider: { height: 1, backgroundColor: COLORS.border, marginVertical: 12 },
+  errorBox: { backgroundColor: '#2a0a0a', borderWidth: 1, borderColor: '#ff4444', borderRadius: 10, padding: 12, marginTop: 10, width: '100%' },
+  errorBoxText: { fontSize: 12, color: '#ff6666', lineHeight: 18 },
 });
