@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Linking, Alert } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { type NativeStackScreenProps } from '@react-navigation/native-stack';
+import Purchases, { type PurchasesPackage } from 'react-native-purchases';
 import { COLORS } from '../../constants/colors';
 import { supabase } from '../../lib/supabase';
 import Button from '../../components/Button';
@@ -9,78 +10,84 @@ import type { OnboardingStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<OnboardingStackParamList, 'Subscription'>;
 
-const PLANS = [
-  {
-    name: 'Monthly',
-    price: '$29',
-    period: '/month',
-    afterTrial: 'Then $29/month',
-    features: ['AI body analysis', 'Personalized workout plan', 'AI nutrition coaching', 'Form video check'],
-    popular: false,
-  },
-  {
-    name: 'Quarterly',
-    price: '$19',
-    period: '/month',
-    afterTrial: 'Then $57 every 3 months',
-    features: ['Everything in Monthly', 'Priority AI analysis', 'Best value — save 34%'],
-    popular: true,
-  },
-];
-
-const PLAN_KEYS = ['monthly', 'quarterly'];
-
 export default function SubscriptionScreen({ navigation }: Props) {
-  const [selectedPlan, setSelectedPlan] = useState(1);
+  const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const [accountability, setAccountability] = useState<boolean>(false);
   const [loading, setLoading] = useState(false);
+  const [loadingPackages, setLoadingPackages] = useState(true);
 
-  const handleContinue = async () => {
+  useEffect(() => {
+    loadOfferings();
+  }, []);
+
+  async function loadOfferings() {
+    try {
+      const offerings = await Purchases.getOfferings();
+      const pkgs = offerings.current?.availablePackages ?? [];
+      setPackages(pkgs);
+      // Default select the second package if available (quarterly = best value)
+      if (pkgs.length > 1) setSelectedIndex(1);
+    } catch (e: any) {
+      console.warn('RevenueCat offerings error:', e.message);
+    } finally {
+      setLoadingPackages(false);
+    }
+  }
+
+  const handlePurchase = async () => {
+    if (packages.length === 0) {
+      Alert.alert('Not available', 'No subscription packages found. Check App Store Connect setup.');
+      return;
+    }
     setLoading(true);
     try {
-      // Force refresh session to ensure token is valid
-      await supabase.auth.refreshSession();
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      console.log('session:', session?.access_token?.slice(0, 30), 'error:', sessionError?.message);
-      if (sessionError || !session) throw new Error('Not logged in — please sign in again.');
-      const user = session.user;
+      const pkg = packages[selectedIndex];
+      const { customerInfo } = await Purchases.purchasePackage(pkg);
 
-      await supabase.from('profiles')
-        .update({ accountability_enabled: accountability })
-        .eq('id', user.id);
-
-      const res = await fetch(
-        'https://nxauqxctaqzivjfxdjdu.supabase.co/functions/v1/create-checkout',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session?.access_token}`,
-          },
-          body: JSON.stringify({
-            plan: PLAN_KEYS[selectedPlan],
-            successUrl: typeof window !== 'undefined' ? 'http://localhost:8081?checkout=success' : 'fitai://checkout/success',
-            cancelUrl: typeof window !== 'undefined' ? 'http://localhost:8081?checkout=cancelled' : 'fitai://checkout/cancelled',
-          }),
+      const isActive = Object.keys(customerInfo.entitlements.active).length > 0;
+      if (isActive) {
+        // Mark subscription in Supabase profile
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          await supabase
+            .from('profiles')
+            .update({ is_subscribed: true, accountability_enabled: accountability })
+            .eq('id', session.user.id);
         }
-      );
-
-      const body = await res.json();
-      console.log('checkout response:', JSON.stringify(body));
-      if (body.error) throw new Error(body.error);
-      if (!body.url) throw new Error(`No URL. Response: ${JSON.stringify(body)}`);
-
-      if (typeof window !== 'undefined') {
-        window.location.href = body.url;
-      } else {
-        Linking.openURL(body.url);
+        navigation.navigate('PaymentSuccess');
       }
-    } catch (err: any) {
-      Alert.alert('Error', err.message);
+    } catch (e: any) {
+      if (!e.userCancelled) {
+        Alert.alert('Purchase failed', e.message);
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  const handleRestore = async () => {
+    setLoading(true);
+    try {
+      const customerInfo = await Purchases.restorePurchases();
+      const isActive = Object.keys(customerInfo.entitlements.active).length > 0;
+      if (isActive) {
+        navigation.navigate('PaymentSuccess');
+      } else {
+        Alert.alert('No purchases found', 'No active subscription found for this Apple ID.');
+      }
+    } catch (e: any) {
+      Alert.alert('Restore failed', e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fallback UI data when packages haven't loaded yet
+  const FALLBACK_PLANS = [
+    { name: 'Monthly', price: '$29', period: '/month', afterTrial: 'Then $29/month', features: ['AI body analysis', 'Personalized workout plan', 'AI nutrition coaching', 'Form video check'] },
+    { name: 'Quarterly', price: '$19', period: '/month', afterTrial: 'Then $57 every 3 months', features: ['Everything in Monthly', 'Priority AI analysis', 'Best value — save 34%'], popular: true },
+  ];
 
   return (
     <SafeAreaView style={styles.container}>
@@ -89,7 +96,6 @@ export default function SubscriptionScreen({ navigation }: Props) {
           <Text style={styles.backText}>←</Text>
         </TouchableOpacity>
 
-        {/* Free trial banner */}
         <View style={styles.trialBanner}>
           <View>
             <Text style={styles.trialBannerTitle}>3 DAYS FREE</Text>
@@ -103,32 +109,53 @@ export default function SubscriptionScreen({ navigation }: Props) {
         </Text>
 
         {/* Plans */}
-        <View style={styles.plans}>
-          {PLANS.map((plan, i) => (
-            <TouchableOpacity
-              key={i}
-              onPress={() => setSelectedPlan(i)}
-              style={[styles.planCard, selectedPlan === i && styles.planCardSelected]}
-            >
-              {plan.popular && (
-                <View style={styles.popularBadge}>
-                  <Text style={styles.popularText}>BEST VALUE</Text>
-                </View>
-              )}
-              <Text style={styles.planName}>{plan.name}</Text>
-              <View style={styles.priceRow}>
-                <Text style={styles.planPrice}>{plan.price}</Text>
-                <Text style={styles.planPeriod}>{plan.period}</Text>
-              </View>
-              <Text style={styles.afterTrialText}>{plan.afterTrial}</Text>
-              <View style={styles.planFeatures}>
-                {plan.features.map((feat, j) => (
-                  <Text key={j} style={styles.planFeature}>✓  {feat}</Text>
-                ))}
-              </View>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {loadingPackages ? (
+          <View style={styles.loadingPlans}>
+            <ActivityIndicator color={COLORS.lime} />
+            <Text style={styles.loadingText}>Loading plans...</Text>
+          </View>
+        ) : (
+          <View style={styles.plans}>
+            {(packages.length > 0 ? packages : FALLBACK_PLANS).map((item, i) => {
+              const isPkg = 'product' in item;
+              const name = isPkg ? item.product.title : (item as any).name;
+              const price = isPkg ? item.product.priceString : (item as any).price;
+              const period = isPkg ? '' : (item as any).period;
+              const afterTrial = isPkg
+                ? `Then ${item.product.priceString}/${item.packageType.toLowerCase()}`
+                : (item as any).afterTrial;
+              const features: string[] = isPkg ? [] : (item as any).features ?? [];
+              const isPopular = isPkg ? i === 1 : !!(item as any).popular;
+
+              return (
+                <TouchableOpacity
+                  key={i}
+                  onPress={() => setSelectedIndex(i)}
+                  style={[styles.planCard, selectedIndex === i && styles.planCardSelected]}
+                >
+                  {isPopular && (
+                    <View style={styles.popularBadge}>
+                      <Text style={styles.popularText}>BEST VALUE</Text>
+                    </View>
+                  )}
+                  <Text style={styles.planName}>{name}</Text>
+                  <View style={styles.priceRow}>
+                    <Text style={styles.planPrice}>{price}</Text>
+                    {period ? <Text style={styles.planPeriod}>{period}</Text> : null}
+                  </View>
+                  <Text style={styles.afterTrialText}>{afterTrial}</Text>
+                  {features.length > 0 && (
+                    <View style={styles.planFeatures}>
+                      {features.map((feat, j) => (
+                        <Text key={j} style={styles.planFeature}>✓  {feat}</Text>
+                      ))}
+                    </View>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
 
         {/* Accountability opt-in */}
         <View style={styles.accountabilityCard}>
@@ -138,7 +165,6 @@ export default function SubscriptionScreen({ navigation }: Props) {
           <Text style={styles.accountabilityDesc}>
             Miss your weekly workout targets? A $10 charge applies every Monday. Hit your goals and you never pay it.
           </Text>
-
           <View style={styles.optionRow}>
             <TouchableOpacity
               onPress={() => setAccountability(true)}
@@ -147,7 +173,6 @@ export default function SubscriptionScreen({ navigation }: Props) {
               <Text style={[styles.optionLabel, accountability === true && styles.optionLabelYes]}>I'm in</Text>
               <Text style={styles.optionSub}>Hold me accountable</Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               onPress={() => setAccountability(false)}
               style={[styles.optionCard, accountability === false && styles.optionCardNo]}
@@ -159,15 +184,18 @@ export default function SubscriptionScreen({ navigation }: Props) {
         </View>
 
         <Button
-          title={loading ? 'Opening checkout...' : 'Start Free Trial →'}
-          onPress={handleContinue}
-          disabled={accountability === null || loading}
+          title={loading ? 'Processing...' : 'Start Free Trial →'}
+          onPress={handlePurchase}
+          disabled={loading || loadingPackages}
           style={{ marginTop: 24 }}
         />
 
+        <TouchableOpacity onPress={handleRestore} disabled={loading} style={styles.restoreButton}>
+          <Text style={styles.restoreText}>Restore Purchases</Text>
+        </TouchableOpacity>
 
         <Text style={styles.legalNote}>
-          Free for 3 days. After trial, billed as selected above. Cancel anytime before trial ends to avoid charges.
+          Free for 3 days. After trial, billed as selected above. Cancel anytime before trial ends to avoid charges. Payment charged to your Apple ID account.
         </Text>
       </ScrollView>
     </SafeAreaView>
@@ -187,11 +215,12 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.limeDim, borderWidth: 1, borderColor: COLORS.lime + '40',
     borderRadius: 16, paddingHorizontal: 16, paddingVertical: 12, marginBottom: 24,
   },
-  trialBannerEmoji: { fontSize: 24 },
   trialBannerTitle: { fontSize: 14, fontWeight: '900', color: COLORS.lime, letterSpacing: 0.5 },
   trialBannerSub: { fontSize: 12, color: COLORS.text2, marginTop: 1 },
   heading: { fontSize: 34, fontWeight: '900', color: COLORS.text, textTransform: 'uppercase', letterSpacing: -0.5, lineHeight: 36, marginBottom: 6 },
   subtitle: { fontSize: 14, color: COLORS.text2, lineHeight: 22, marginBottom: 24 },
+  loadingPlans: { alignItems: 'center', gap: 10, paddingVertical: 32 },
+  loadingText: { color: COLORS.text2, fontSize: 13 },
   plans: { gap: 14 },
   planCard: {
     backgroundColor: COLORS.surface, borderWidth: 2, borderColor: COLORS.border,
@@ -215,7 +244,6 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(255,71,87,0.2)', borderRadius: 20, padding: 20,
   },
   accountabilityHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
-  accountabilityIcon: { fontSize: 20 },
   accountabilityTitle: { fontSize: 16, fontWeight: '800', color: COLORS.red },
   accountabilityDesc: { fontSize: 13, color: COLORS.text2, lineHeight: 20, marginBottom: 16 },
   optionRow: { flexDirection: 'row', gap: 12, marginTop: 4 },
@@ -225,10 +253,11 @@ const styles = StyleSheet.create({
   },
   optionCardYes: { borderColor: COLORS.lime, backgroundColor: COLORS.limeDim },
   optionCardNo: { borderColor: COLORS.border2, backgroundColor: COLORS.surface2 },
-  optionEmoji: { fontSize: 26, marginBottom: 4 },
   optionLabel: { fontSize: 16, fontWeight: '800', color: COLORS.text3 },
   optionLabelYes: { color: COLORS.lime },
   optionLabelNo: { color: COLORS.text2 },
   optionSub: { fontSize: 11, color: COLORS.text3, textAlign: 'center' },
-  legalNote: { fontSize: 11, color: COLORS.text3, textAlign: 'center', marginTop: 16, lineHeight: 17 },
+  restoreButton: { alignItems: 'center', paddingVertical: 14 },
+  restoreText: { fontSize: 13, color: COLORS.text3, textDecorationLine: 'underline' },
+  legalNote: { fontSize: 11, color: COLORS.text3, textAlign: 'center', marginTop: 8, lineHeight: 17 },
 });

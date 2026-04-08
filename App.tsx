@@ -3,10 +3,13 @@ import { Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import Purchases, { LOG_LEVEL } from 'react-native-purchases';
 import RootNavigator from './src/navigation/RootNavigator';
 import { supabase } from './src/lib/supabase';
 import { useAppStore } from './src/store/useAppStore';
 import { requestNotificationPermission, scheduleDailyReminders } from './src/lib/notifications';
+
+const REVENUECAT_APPLE_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_APPLE_API_KEY ?? '';
 
 const queryClient = new QueryClient();
 
@@ -64,6 +67,13 @@ function AuthListener() {
 }
 
 export default function App() {
+  useEffect(() => {
+    if (Platform.OS === 'ios' || Platform.OS === 'android') {
+      Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+      Purchases.configure({ apiKey: REVENUECAT_APPLE_API_KEY });
+    }
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
