@@ -10,6 +10,10 @@ interface AppState {
   isOnboarded: boolean;
   setIsOnboarded: (v: boolean) => void;
 
+  // Subscription status (from RevenueCat entitlement / profiles table)
+  isSubscribed: boolean;
+  setIsSubscribed: (v: boolean) => void;
+
   // Pending onboarding step after payment redirect
   pendingOnboardingStep: string | null;
   setPendingOnboardingStep: (step: string | null) => void;
@@ -39,6 +43,9 @@ export const useAppStore = create<AppState>()((set) => ({
 
   isOnboarded: false,
   setIsOnboarded: (v) => set({ isOnboarded: v }),
+
+  isSubscribed: false,
+  setIsSubscribed: (v) => set({ isSubscribed: v }),
 
   pendingOnboardingStep: null,
   setPendingOnboardingStep: (step) => set({ pendingOnboardingStep: step }),

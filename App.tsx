@@ -3,19 +3,21 @@ import { Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import Purchases, { LOG_LEVEL } from 'react-native-purchases';
 import RootNavigator from './src/navigation/RootNavigator';
 import { supabase } from './src/lib/supabase';
 import { useAppStore } from './src/store/useAppStore';
 import { requestNotificationPermission, scheduleDailyReminders } from './src/lib/notifications';
-
-const REVENUECAT_APPLE_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_APPLE_API_KEY ?? '';
+import { configurePurchases, identifyPurchasesUser, resetPurchasesUser } from './src/lib/purchases';
 
 const queryClient = new QueryClient();
+
+// Configure RevenueCat once at startup
+configurePurchases();
 
 function AuthListener() {
   const setSession = useAppStore((s) => s.setSession);
   const setIsOnboarded = useAppStore((s) => s.setIsOnboarded);
+  const setIsSubscribed = useAppStore((s) => s.setIsSubscribed);
   const setPendingOnboardingStep = useAppStore((s) => s.setPendingOnboardingStep);
 
   useEffect(() => {
@@ -32,14 +34,16 @@ function AuthListener() {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session);
       if (session) {
+        await identifyPurchasesUser(session.user.id);
         await fetchProfile(session.user.id);
       }
     });
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       if (session) {
+        await identifyPurchasesUser(session.user.id);
         fetchProfile(session.user.id);
         if (Platform.OS === 'web') {
           requestNotificationPermission().then((granted) => {
@@ -48,6 +52,8 @@ function AuthListener() {
         }
       } else {
         setIsOnboarded(false);
+        setIsSubscribed(false);
+        await resetPurchasesUser();
       }
     });
 
@@ -57,23 +63,17 @@ function AuthListener() {
   async function fetchProfile(userId: string) {
     const { data } = await supabase
       .from('profiles')
-      .select('is_onboarded')
+      .select('is_onboarded, is_subscribed')
       .eq('id', userId)
       .single();
     setIsOnboarded(data?.is_onboarded ?? false);
+    setIsSubscribed(data?.is_subscribed ?? false);
   }
 
   return null;
 }
 
 export default function App() {
-  useEffect(() => {
-    if (Platform.OS === 'ios' || Platform.OS === 'android') {
-      Purchases.setLogLevel(LOG_LEVEL.DEBUG);
-      Purchases.configure({ apiKey: REVENUECAT_APPLE_API_KEY });
-    }
-  }, []);
-
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>

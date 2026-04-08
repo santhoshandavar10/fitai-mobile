@@ -4,9 +4,11 @@ import {
   Modal, TextInput, Animated, Easing, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import RevenueCatUI from 'react-native-purchases-ui';
 import { COLORS } from '../../constants/colors';
 import { useAppStore } from '../../store/useAppStore';
 import { supabase } from '../../lib/supabase';
+import { resetPurchasesUser } from '../../lib/purchases';
 import Card from '../../components/Card';
 import Button from '../../components/Button';
 
@@ -100,7 +102,16 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleLogout = () => { supabase.auth.signOut(); };
+  const handleLogout = async () => {
+    await resetPurchasesUser();
+    supabase.auth.signOut();
+  };
+
+  const handleManageSubscription = async () => {
+    if (Platform.OS === 'ios' || Platform.OS === 'android') {
+      await RevenueCatUI.presentCustomerCenter();
+    }
+  };
 
   const userName  = profile?.name ?? session?.user?.user_metadata?.name ?? 'User';
   const userEmail = session?.user?.email ?? '';
@@ -114,7 +125,7 @@ export default function ProfileScreen() {
     { label: 'Update Goals',          onPress: () => openEdit('goals') },
     { label: 'Notifications',         onPress: () => {} },
     { label: 'Privacy & Security',    onPress: () => {} },
-    { label: 'Manage Subscription',   onPress: () => {} },
+    { label: 'Manage Subscription',   onPress: handleManageSubscription },
     { label: 'Help & Support',        onPress: () => {} },
   ];
 
